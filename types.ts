@@ -4,7 +4,9 @@ export interface Participant {
   fecha: string;
   nombre: string;
   celular: string;
-  ticket: string;
+  ticket: string; // Usado para "Negocio" o código de ticket
+  premio_asignado?: string;
+  negocio_nombre?: string;
 }
 
 export interface Prize {

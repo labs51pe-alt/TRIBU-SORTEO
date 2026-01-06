@@ -20,7 +20,10 @@ import {
   WifiOff,
   Phone,
   Briefcase,
-  Ticket
+  Ticket,
+  Gift,
+  ExternalLink,
+  Sparkles
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
@@ -48,91 +51,106 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [showFullParticipantList, setShowFullParticipantList] = useState(false);
-  const [dbError, setDbError] = useState<string | null>(null);
   const [isSupabaseConnected, setIsSupabaseConnected] = useState(true);
   
   const participantFileInputRef = useRef<HTMLInputElement>(null);
   const prizeFileInputRef = useRef<HTMLInputElement>(null);
   const spinInterval = useRef<number | null>(null);
 
-  // Process Excel for Prizes
+  const handlePrizeUpdateManual = () => {
+    const lines = prizesInput.split('\n').filter(l => l.trim());
+    const newPrizes: Prize[] = new Array(MAX_ROUNDS).fill(null).map((_, i) => ({ sponsor: "Tribu", description: `Sorteo #${i + 1}` }));
+    lines.forEach((line, i) => {
+      if (i < MAX_ROUNDS) {
+        const parts = line.split(':');
+        const sponsorPart = parts[0]?.trim() || "Tribu";
+        const descPart = parts.slice(1).join(':').trim() || `Sorteo #${i + 1}`;
+        newPrizes[i] = { sponsor: sponsorPart, description: descPart };
+      }
+    });
+    setPrizes(newPrizes);
+    alert("Lista de negocios actualizada.");
+  };
+
+  const exportWinners = () => {
+    if (winners.length === 0) return;
+    const dataToExport = winners.map(w => ({
+      Ronda: w.round,
+      Participante_Ganador: w.nombre,
+      Celular_Ganador: w.celular,
+      Premio: w.prize,
+      Empresa_Sponsor: w.sponsor,
+      Ticket: w.ticket,
+      Fecha: w.wonAt.toLocaleString()
+    }));
+    const ws = XLSX.utils.json_to_sheet(dataToExport);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Ganadores");
+    XLSX.writeFile(wb, `Ganadores_Tribu_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
   const processPrizesExcel = (jsonData: any[]) => {
-    let prizeList: Prize[] = [];
-    if (jsonData.length > 0) {
-      const keys = Object.keys(jsonData[0]);
-      const sponsorKey = keys.find(k => k.toLowerCase().match(/negocio|empresa|sponsor|marca/));
-      const descriptionKey = keys.find(k => k.toLowerCase().match(/premio|regalo|descripcion/));
-      const phoneKey = keys.find(k => k.toLowerCase().match(/celular|tel|fono|whatsapp/));
-      
-      prizeList = jsonData.map(row => ({
-        sponsor: String(row[sponsorKey || keys[0]] || "Tribu").trim(),
-        description: String(row[descriptionKey || keys[keys.length - 1]] || "Sin descripción").trim(),
-        sponsorPhone: row[phoneKey] ? String(row[phoneKey]).trim() : ""
-      })).filter(p => p.description && p.description !== "undefined");
-    }
+    if (jsonData.length === 0) return;
+    const keys = Object.keys(jsonData[0]);
+    const colNegocio = keys.find(k => k.toLowerCase() === 'negocio') || keys[0];
+    const colPremio = keys.find(k => k.toLowerCase() === 'premio') || keys[keys.length - 1];
+    const colCelular = keys.find(k => k.toLowerCase() === 'celular');
+
+    const prizeList: Prize[] = jsonData.map(row => ({
+      sponsor: String(row[colNegocio] || "Tribu").trim(),
+      description: String(row[colPremio] || "Sin descripción").trim(),
+      sponsorPhone: colCelular ? String(row[colCelular]).trim() : undefined
+    })).filter(p => p.description && p.description !== "undefined");
+
     if (prizeList.length > 0) {
       const newPrizes = [...prizes];
       prizeList.forEach((p, i) => { if(i < MAX_ROUNDS) newPrizes[i] = p; });
       setPrizes(newPrizes);
-      setPrizesInput(prizeList.map(p => `${p.sponsor}${p.sponsorPhone ? ' ('+p.sponsorPhone+')' : ''}: ${p.description}`).join('\n'));
+      setPrizesInput(prizeList.map(p => `${p.sponsor}: ${p.description}`).join('\n'));
+      alert(`${prizeList.length} Negocios y Premios cargados correctamente.`);
     }
   };
 
-  // Process Excel for Participants
   const processParticipantsWithAI = async (rawData: any[]) => {
     if (rawData.length === 0) return;
     setIsLoading(true);
-    setLoadingStep('Mapeando columnas con IA...');
+    setLoadingStep('Mapeando Participantes...');
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Analiza los encabezados: ${JSON.stringify(Object.keys(rawData[0]))}. Retorna JSON: {"nombre": "col_nombre", "celular": "col_tel", "ticket": "col_ticket"}.`,
-        config: { responseMimeType: "application/json" }
-      });
-      const resText = response.text || "{}";
-      const mapping = JSON.parse(resText.replace(/```json|```/g, "").trim());
+      const allKeys = Object.keys(rawData[0]);
+      const colNombre = allKeys.find(k => ['name', 'dueño', 'nombre'].includes(k.toLowerCase())) || allKeys[2];
+      const colCelular = allKeys.find(k => ['phone', 'celular', 'tel'].includes(k.toLowerCase())) || allKeys[3];
+      const colTicket = allKeys.find(k => ['ticket_code', 'negocio', 'ticket'].includes(k.toLowerCase())) || allKeys[4];
+      const colPremio = allKeys.find(k => ['premio', 'premio_asignado'].includes(k.toLowerCase()));
+
       const mapped = rawData.map((row, idx) => ({
         id: `p-${Date.now()}-${idx}`,
-        nombre: String(row[mapping.nombre] || row['name'] || row['Dueño'] || 'Anónimo'),
-        celular: String(row[mapping.celular] || row['phone'] || row['Celular'] || ''),
-        ticket: String(row[mapping.ticket] || row['ticket_code'] || row['Negocio'] || idx),
+        nombre: String(row[colNombre] || 'Anónimo').trim(),
+        celular: String(row[colCelular] || '').trim(),
+        ticket: String(row[colTicket] || idx).trim(),
+        premio_asignado: colPremio ? String(row[colPremio]).trim() : undefined,
+        negocio_nombre: String(row[colTicket] || 'Tribu').trim(),
         fecha: new Date().toLocaleDateString()
       }));
+      
       setParticipants(prev => [...prev, ...mapped]);
       setStatus(AppStatus.READY);
     } catch (e) {
-      console.error("Mapping error:", e);
-      const mapped = rawData.map((row, idx) => ({
-        id: `p-${Date.now()}-${idx}`,
-        nombre: String(row['name'] || row['Nombre'] || 'Anónimo'),
-        celular: String(row['phone'] || row['Celular'] || ''),
-        ticket: String(row['ticket_code'] || row['Ticket'] || idx),
-        fecha: new Date().toLocaleDateString()
-      }));
-      setParticipants(prev => [...prev, ...mapped]);
+      console.error(e);
     } finally { setIsLoading(false); }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'participants' | 'prizes') => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
         const data = new Uint8Array(evt.target?.result as ArrayBuffer);
         const wb = XLSX.read(data, { type: 'array' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
+        const ws = wb.Sheets[wb.SheetNames[0]];
         const jsonData = XLSX.utils.sheet_to_json(ws);
-
-        if (type === 'participants') {
-          processParticipantsWithAI(jsonData);
-        } else {
-          processPrizesExcel(jsonData);
-        }
+        if (type === 'participants') processParticipantsWithAI(jsonData);
+        else processPrizesExcel(jsonData);
       } catch (err) {
         alert("Error al procesar el archivo Excel.");
       }
@@ -143,34 +161,15 @@ const App: React.FC = () => {
 
   const fetchWinners = async () => {
     try {
-      setDbError(null);
-      const { data, error } = await supabase
-        .from('winners')
-        .select('*')
-        .order('round', { ascending: false });
-      
+      const { data, error } = await supabase.from('winners').select('*').order('round', { ascending: false });
       if (error) throw error;
-
       if (data) {
-        const formattedWinners: Winner[] = data.map(w => ({
-          id: w.id,
-          nombre: w.nombre,
-          ticket: w.ticket,
-          celular: w.celular,
-          prize: w.prize,
-          sponsor: w.sponsor,
-          sponsorPhone: w.sponsor_phone,
-          round: w.round,
-          fecha: new Date(w.won_at).toLocaleDateString(),
-          wonAt: new Date(w.won_at)
-        }));
-        setWinners(formattedWinners);
-        setIsSupabaseConnected(true);
+        setWinners(data.map(w => ({
+          id: w.id, nombre: w.nombre, ticket: w.ticket, celular: w.celular, prize: w.prize,
+          sponsor: w.sponsor, round: w.round, wonAt: new Date(w.won_at), fecha: new Date(w.won_at).toLocaleDateString()
+        })));
       }
-    } catch (err: any) {
-      setDbError(err.message || "Error Cloud");
-      setIsSupabaseConnected(false);
-    }
+    } catch (err) { console.error(err); }
   };
 
   useEffect(() => {
@@ -180,14 +179,9 @@ const App: React.FC = () => {
     if (savedPrizes) {
       const p = JSON.parse(savedPrizes);
       setPrizes(p);
-      const meaningfulPrizes = p.filter((x: Prize) => x.sponsor !== "Tribu");
-      if (meaningfulPrizes.length > 0) {
-        setPrizesInput(p.map((x: Prize) => `${x.sponsor}${x.sponsorPhone ? ' ('+x.sponsorPhone+')' : ''}: ${x.description}`).join('\n'));
-      }
+      setPrizesInput(p.filter((x: Prize) => x.sponsor !== "Tribu").map((x: Prize) => `${x.sponsor}: ${x.description}`).join('\n'));
     }
     fetchWinners();
-    const channel = supabase.channel('updates').on('postgres_changes', { event: '*', schema: 'public', table: 'winners' }, () => fetchWinners()).subscribe();
-    return () => { supabase.removeChannel(channel); };
   }, []);
 
   useEffect(() => {
@@ -200,324 +194,259 @@ const App: React.FC = () => {
   }, [participants, winners]);
 
   const currentRound = winners.length + 1;
-  const activePrize = useMemo(() => {
-    return prizes[winners.length] || { sponsor: "Tribu", description: `Regalo #${currentRound}` };
-  }, [prizes, winners.length, currentRound]);
-
-  const saveWinnerToSupabase = async (newWinner: Winner) => {
-    try {
-      const { error } = await supabase
-        .from('winners')
-        .insert([{
-          id: newWinner.id,
-          nombre: newWinner.nombre,
-          ticket: newWinner.ticket,
-          celular: newWinner.celular,
-          prize: newWinner.prize,
-          sponsor: newWinner.sponsor,
-          sponsor_phone: newWinner.sponsorPhone,
-          round: newWinner.round,
-          won_at: newWinner.wonAt.toISOString()
-        }]);
-      if (error) throw error;
-    } catch (err: any) {
-      setDbError(err.message);
-    }
-  };
-
-  const handlePrizeUpdateManual = () => {
-    const lines = prizesInput.split('\n').filter(l => l.trim() !== "");
-    const updatedPrizes: Prize[] = new Array(MAX_ROUNDS).fill(null).map((_, i) => ({ sponsor: "Tribu", description: `Premio #${i + 1}` }));
-    lines.forEach((l, i) => { 
-      if(i < MAX_ROUNDS) {
-        if (l.includes(':')) {
-          const [spPart, descPart] = l.split(':');
-          let sp = spPart.trim();
-          let ph = "";
-          if (sp.includes('(') && sp.includes(')')) {
-            const match = sp.match(/\(([^)]+)\)/);
-            if (match) { ph = match[1]; sp = sp.replace(/\([^)]+\)/, "").trim(); }
-          }
-          updatedPrizes[i] = { sponsor: sp, description: descPart.trim(), sponsorPhone: ph };
-        } else {
-          updatedPrizes[i] = { sponsor: "Tribu", description: l.trim() };
-        }
-      }
-    });
-    setPrizes([...updatedPrizes]);
-  };
-
-  const exportWinners = () => {
-    if (winners.length === 0) return alert("No hay ganadores.");
-    const dataToExport = winners.map(w => ({
-      Ronda: w.round,
-      Ganador: w.nombre,
-      Tel_Ganador: w.celular,
-      Ticket: w.ticket,
-      Premio: w.prize,
-      Empresa: w.sponsor,
-      Tel_Empresa: w.sponsorPhone || 'N/A'
-    }));
-    const ws = XLSX.utils.json_to_sheet(dataToExport);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Ganadores");
-    XLSX.writeFile(wb, `Tribu_Final_${new Date().toLocaleDateString()}.xlsx`);
-  };
+  const activePrize = useMemo(() => prizes[winners.length] || { sponsor: "Tribu", description: `Premio #${currentRound}` }, [prizes, winners.length, currentRound]);
 
   const startRaffle = useCallback(() => {
     if (availableParticipants.length === 0) return;
     setStatus(AppStatus.SPINNING);
     let counter = 0;
-    const maxSpins = 40; 
+    const maxIterations = 80; 
     spinInterval.current = window.setInterval(() => {
       const idx = Math.floor(Math.random() * availableParticipants.length);
       setSpinName(availableParticipants[idx].nombre);
-      if (++counter >= maxSpins) {
+      if (++counter >= maxIterations) {
         if (spinInterval.current) clearInterval(spinInterval.current);
         const winner = availableParticipants[Math.floor(Math.random() * availableParticipants.length)];
+        const finalPrize = winner.premio_asignado || activePrize.description;
+        const finalSponsor = activePrize.sponsor || 'Tribu';
+
         const newW: Winner = { 
-          ...winner, 
-          wonAt: new Date(), 
-          round: currentRound, 
-          prize: activePrize.description, 
-          sponsor: activePrize.sponsor, 
-          sponsorPhone: activePrize.sponsorPhone 
+          ...winner, wonAt: new Date(), round: currentRound, 
+          prize: finalPrize, sponsor: finalSponsor
         };
+        
         setCurrentWinner(newW);
         setWinners(prev => [newW, ...prev]);
         setStatus(AppStatus.WINNER_REVEALED);
-        saveWinnerToSupabase(newW);
-        confetti({ 
-          particleCount: 300, 
-          spread: 120, 
-          origin: { y: 0.5 },
-          colors: ['#4f46e5', '#fbbf24', '#10b981', '#f43f5e']
-        });
+        
+        supabase.from('winners').insert([{
+          id: newW.id, nombre: newW.nombre, ticket: newW.ticket, celular: newW.celular,
+          prize: newW.prize, sponsor: newW.sponsor,
+          round: newW.round, won_at: newW.wonAt.toISOString()
+        }]).then();
+        
+        confetti({ particleCount: 600, spread: 180, origin: { y: 0.6 } });
       }
-    }, 65);
+    }, 70);
   }, [availableParticipants, currentRound, activePrize]);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      <header className="bg-white border-b px-5 py-3 flex justify-between items-center sticky top-0 z-50 shadow-sm">
-        <div className="flex items-center gap-2">
-          <Zap className="text-indigo-600 fill-current w-5 h-5" />
+      <header className="bg-white border-b px-6 py-3 flex justify-between items-center sticky top-0 z-50 shadow-sm h-16">
+        <div className="flex items-center gap-3">
+          <div className="bg-indigo-600 p-1.5 rounded-lg shadow-lg shadow-indigo-100">
+            <Zap className="text-white fill-current w-4 h-4" />
+          </div>
           <h1 className="text-lg font-black tracking-tight text-slate-900">Tribu<span className="text-indigo-600">Sorteos</span></h1>
-          <div className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase flex items-center gap-1.5 ${isSupabaseConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
-            {isSupabaseConnected ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />} {isSupabaseConnected ? 'Cloud Sync' : 'Offline'}
+          <div className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase flex items-center gap-2 border ${isSupabaseConnected ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-amber-50 text-amber-600 border-amber-100'} ml-2`}>
+            {isSupabaseConnected ? <Wifi className="w-2.5 h-2.5" /> : <WifiOff className="w-2.5 h-2.5" />} {isSupabaseConnected ? 'CLOUD SYNC' : 'OFFLINE'}
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={exportWinners} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-[11px] font-black flex items-center gap-2 hover:bg-black transition-all shadow-md active:scale-95">
-            <Download className="w-3.5 h-3.5" /> EXPORTAR
+          <button onClick={exportWinners} className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg active:scale-95">
+            <Download className="w-3.5 h-3.5" /> Exportar Resultados
           </button>
-          <button onClick={() => { if(confirm("¿Deseas reiniciar la sesión?")) { localStorage.clear(); window.location.reload(); } }} className="p-1.5 text-slate-300 hover:text-red-500 transition-colors" title="Reiniciar App">
+          <button onClick={() => { if(confirm("¿Reiniciar sistema?")) { localStorage.clear(); window.location.reload(); } }} className="p-2 text-slate-300 hover:text-red-500 transition-colors bg-slate-50 rounded-lg">
             <RefreshCcw className="w-4 h-4" />
           </button>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto w-full p-4 space-y-6">
+      <main className="max-w-7xl mx-auto w-full p-4 md:p-6 space-y-8">
         
-        {/* PANEL SORTEO PRINCIPAL - COMPACTADO */}
-        <section className="raffle-gradient rounded-[2.5rem] p-8 md:p-10 text-white border-[6px] border-white shadow-xl min-h-[50vh] flex flex-col items-center justify-center text-center relative overflow-hidden transition-all duration-500">
+        {/* PANTALLA DE SORTEO COMPACTA */}
+        <section className="raffle-gradient rounded-[2.5rem] p-6 md:p-10 text-white border-[8px] border-white shadow-2xl min-h-[500px] md:min-h-[550px] flex flex-col items-center justify-center text-center relative overflow-hidden">
+          <div className="absolute inset-0 opacity-[0.05] pointer-events-none">
+            <div className="grid grid-cols-10 gap-8 transform rotate-12 scale-150">
+               {Array.from({length: 40}).map((_, i) => <Building2 key={i} className="w-16 h-16" />)}
+            </div>
+          </div>
+
           <div className="relative z-10 w-full max-w-4xl space-y-8">
             {status === AppStatus.SPINNING ? (
-              <div className="space-y-6 animate-in zoom-in-95 duration-300">
-                <div className="inline-block bg-amber-400 text-indigo-950 px-6 py-1.5 rounded-full font-black text-[10px] uppercase tracking-[0.2em] shadow-lg">GIRANDO...</div>
-                <div className="text-6xl md:text-8xl font-black italic tracking-tighter leading-none animate-pulse drop-shadow-lg">
-                  {spinName}
+              <div className="space-y-6 animate-in zoom-in-95">
+                <div className="inline-flex items-center gap-2 bg-amber-400 text-indigo-950 px-8 py-2 rounded-full font-black text-[10px] uppercase tracking-[0.5em] shadow-xl">
+                   <RefreshCcw className="w-4 h-4 animate-spin" /> Girando...
                 </div>
-                <div className="flex flex-col items-center gap-2">
-                   <p className="text-indigo-200 font-bold text-base uppercase tracking-widest">Premio de: {activePrize.sponsor}</p>
-                   <div className="h-1.5 w-48 bg-white/10 rounded-full overflow-hidden">
-                     <div className="h-full bg-amber-400 animate-progress"></div>
-                   </div>
+                <div className="text-6xl md:text-8xl font-black italic tracking-tighter animate-pulse leading-none drop-shadow-2xl">{spinName}</div>
+                <div className="h-2 w-64 bg-white/10 rounded-full mx-auto overflow-hidden border border-white/10 shadow-inner">
+                   <div className="h-full bg-amber-400 animate-progress"></div>
                 </div>
+                <p className="text-indigo-200 font-black uppercase tracking-[0.3em] text-[10px] italic">Buscando ganador para {activePrize.sponsor}...</p>
               </div>
             ) : status === AppStatus.WINNER_REVEALED && currentWinner ? (
-              <div className="space-y-6 animate-in zoom-in-90 duration-700">
-                <div className="bg-emerald-500 text-white px-8 py-3 rounded-full font-black text-xl inline-block border-2 border-white shadow-xl animate-bounce tracking-widest uppercase">¡Ganador!</div>
+              <div className="space-y-6 animate-in zoom-in-90 duration-500">
+                <div className="bg-emerald-500 text-white px-8 py-3 rounded-full font-black text-xl inline-flex items-center gap-3 border-4 border-white shadow-2xl animate-bounce tracking-widest uppercase">
+                  <Trophy className="w-7 h-7" /> ¡GANADOR!
+                </div>
                 
-                <div className="space-y-1">
-                  <h2 className="text-6xl md:text-8xl font-black italic leading-none drop-shadow-lg text-white">
-                    {currentWinner.nombre}
-                  </h2>
-                  <div className="flex justify-center gap-4 text-xl font-black text-amber-400">
-                     <span className="flex items-center gap-1.5"><Phone className="w-5 h-5" /> {currentWinner.celular}</span>
-                     <span className="bg-white/10 px-3 py-0.5 rounded-lg text-white/90 text-xs flex items-center gap-1.5 border border-white/10"><Ticket className="w-3.5 h-3.5" /> {currentWinner.ticket}</span>
+                <div className="space-y-2">
+                  <h2 className="text-6xl md:text-8xl font-black italic leading-none drop-shadow-2xl text-white tracking-tighter">{currentWinner.nombre}</h2>
+                </div>
+
+                <div className="bg-white/10 glass p-8 md:p-10 rounded-[3rem] max-w-4xl mx-auto border border-white/20 shadow-xl backdrop-blur-xl">
+                  <div className="flex flex-col items-center gap-6">
+                    <div className="flex flex-col items-center gap-2">
+                       <span className="flex items-center gap-2 text-amber-400 font-black uppercase text-[10px] tracking-[0.5em] mb-1"><Sparkles className="w-4 h-4" /> Patrocinador</span>
+                       <h3 className="text-4xl md:text-6xl font-black text-white uppercase tracking-tighter leading-none flex items-center gap-4 italic">
+                         <Building2 className="w-10 h-10 text-indigo-400" /> {currentWinner.sponsor}
+                       </h3>
+                    </div>
+                    
+                    <div className="w-full h-px bg-white/10" />
+
+                    <div className="space-y-2">
+                       <p className="text-[10px] font-black uppercase text-indigo-300 tracking-[0.5em]">Premio:</p>
+                       <p className="text-4xl md:text-6xl font-black text-amber-400 italic leading-tight drop-shadow-lg">"{currentWinner.prize}"</p>
+                    </div>
+
+                    <div className="bg-emerald-500 text-white px-10 py-4 rounded-[2rem] font-black text-2xl md:text-4xl flex items-center gap-4 shadow-xl border-2 border-white/20">
+                       <p className="tracking-[0.1em] flex items-center gap-3"><Phone className="w-8 h-8" /> {currentWinner.celular}</p>
+                    </div>
                   </div>
                 </div>
 
-                <div className="bg-white/10 glass p-6 md:p-8 rounded-[2rem] max-w-2xl mx-auto border border-white/20 shadow-xl backdrop-blur-2xl">
-                  <p className="text-indigo-200 text-[10px] uppercase font-black mb-3 tracking-[0.3em]">Premio de {currentWinner.sponsor}:</p>
-                  <p className="text-2xl md:text-4xl font-black text-white italic leading-tight mb-4">"{currentWinner.prize}"</p>
-                  
-                  {currentWinner.sponsorPhone && (
-                    <div className="pt-4 border-t border-white/10 flex flex-col items-center gap-1.5">
-                       <p className="text-[9px] font-black uppercase text-indigo-300 tracking-widest">Contacto Empresa:</p>
-                       <div className="bg-emerald-500/10 px-4 py-1.5 rounded-xl border border-emerald-500/30 text-emerald-400 font-black text-lg flex items-center gap-2">
-                         <Phone className="w-4 h-4" /> {currentWinner.sponsorPhone}
-                       </div>
-                    </div>
-                  )}
-                </div>
-
-                <button onClick={() => setStatus(AppStatus.READY)} className="group bg-white text-indigo-950 px-12 py-5 rounded-full font-black text-2xl shadow-[0_8px_0_0_#cbd5e1] hover:translate-y-1 active:translate-y-3 transition-all uppercase tracking-widest flex items-center gap-3 mx-auto">
-                  SIGUIENTE <Zap className="w-6 h-6 group-hover:scale-110 transition-transform" />
+                <button onClick={() => setStatus(AppStatus.READY)} className="bg-white text-indigo-950 px-16 py-6 rounded-full font-black text-3xl shadow-[0_12px_0_0_#cbd5e1] hover:translate-y-2 active:translate-y-6 transition-all uppercase tracking-widest flex items-center gap-6 mx-auto mt-10 border-4 border-indigo-100">
+                  CONTINUAR <Play className="w-10 h-10 fill-current" />
                 </button>
               </div>
             ) : (
               <div className="space-y-8">
-                <div className="space-y-2">
-                   <Crown className="w-12 h-12 text-amber-400 mx-auto drop-shadow-md" />
-                   <h2 className="text-7xl md:text-9xl font-black italic leading-none drop-shadow-lg tracking-tighter uppercase">TRIBU</h2>
-                   <div className="inline-block bg-white/10 px-6 py-1.5 rounded-full font-black text-sm tracking-[0.4em] text-indigo-200 backdrop-blur-md">RONDA #{currentRound}</div>
-                </div>
-
-                <div className="bg-amber-400 text-indigo-950 p-8 rounded-[3rem] max-w-2xl mx-auto shadow-xl relative group transition-all duration-300">
-                   <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-white px-5 py-2 rounded-full text-[9px] font-black uppercase shadow-md flex items-center gap-2 border border-amber-400">
-                     <Building2 className="w-3.5 h-3.5" /> {activePrize.sponsor} Patrocina:
-                   </div>
-                   <p className="text-3xl md:text-5xl font-black italic leading-tight tracking-tight">"{activePrize.description}"</p>
-                </div>
-
-                <div className="flex flex-col items-center gap-6">
-                  <button onClick={startRaffle} disabled={availableParticipants.length === 0} className="group relative bg-white text-indigo-950 px-16 py-8 rounded-full font-black text-3xl md:text-4xl shadow-[0_12px_0_0_#cbd5e1] hover:translate-y-1 active:translate-y-4 transition-all disabled:opacity-50">
-                    <span className="flex items-center gap-5"><Play className="w-10 h-10 fill-current group-hover:scale-105 transition-transform" /> SORTEAR</span>
-                  </button>
-                  <div className="flex items-center gap-3 text-indigo-200 font-black text-[10px] uppercase tracking-[0.3em] opacity-60">
-                    <Users className="w-4 h-4" /> {availableParticipants.length} Participantes
+                <div className="space-y-3">
+                  <Crown className="w-12 h-12 text-amber-400 mx-auto drop-shadow-xl mb-2" />
+                  <h2 className="text-8xl md:text-[11rem] font-black italic tracking-tighter uppercase leading-none drop-shadow-2xl text-white">TRIBU</h2>
+                  <div className="bg-white/10 px-6 py-1.5 rounded-full inline-block backdrop-blur-md">
+                    <p className="text-white font-black uppercase text-xs tracking-[0.6em] opacity-90">RONDA #{currentRound}</p>
                   </div>
+                </div>
+                
+                <div className="bg-amber-400 text-indigo-950 p-8 md:p-10 rounded-[2.5rem] max-w-2xl mx-auto shadow-xl border-4 border-white transform hover:scale-[1.02] transition-transform relative">
+                   <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-white text-indigo-900 px-6 py-1 rounded-full font-black text-[9px] uppercase border-2 border-amber-400 shadow-sm flex items-center gap-2">
+                     <Building2 className="w-3 h-3" /> {activePrize.sponsor} PATROCINA:
+                   </div>
+                   <p className="text-4xl md:text-5xl font-black italic leading-tight tracking-tight">"{activePrize.description}"</p>
+                </div>
+                
+                <button onClick={startRaffle} disabled={availableParticipants.length === 0} className="group bg-white text-indigo-950 px-20 py-8 rounded-full font-black text-5xl shadow-[0_15px_0_0_#cbd5e1] hover:translate-y-2 active:translate-y-8 transition-all animate-glow-pulse uppercase flex items-center gap-8 border-[6px] border-indigo-100 mt-4">
+                  <Play className="w-14 h-14 fill-current group-hover:scale-110 transition-transform" /> SORTEAR
+                </button>
+                
+                <div className="flex justify-center gap-4">
+                   <div className="bg-white/5 backdrop-blur-md px-6 py-3 rounded-2xl border border-white/10 shadow-lg">
+                      <p className="text-[9px] font-black uppercase text-indigo-300 tracking-widest mb-0.5">Participantes</p>
+                      <p className="text-2xl font-black text-white">{availableParticipants.length}</p>
+                   </div>
+                   <div className="bg-white/5 backdrop-blur-md px-6 py-3 rounded-2xl border border-white/10 shadow-lg">
+                      <p className="text-[9px] font-black uppercase text-indigo-300 tracking-widest mb-0.5">Ganadores</p>
+                      <p className="text-2xl font-black text-amber-400">{winners.length}</p>
+                   </div>
                 </div>
               </div>
             )}
           </div>
         </section>
 
-        {/* CONTROLES ADMINISTRATIVOS - REDUCIDOS */}
+        {/* CONFIGURACIÓN */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <section className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-base font-black uppercase text-slate-800 flex items-center gap-2"><Users className="text-indigo-600 w-5 h-5" /> Participantes</h3>
-              {participants.length > 0 && (
-                <button onClick={() => setParticipants([])} className="p-2 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded-xl transition-all">
-                  <Trash2 className="w-4 h-4" />
+          <section className="bg-white p-8 rounded-[2.5rem] shadow-lg border border-slate-100 flex flex-col justify-between group">
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-black uppercase text-slate-800 flex items-center gap-3"><Users className="text-indigo-600 w-6 h-6" /> Participantes</h3>
+                {participants.length > 0 && <span className="bg-emerald-50 text-emerald-600 px-3 py-1 rounded-full text-[9px] font-black border border-emerald-100 uppercase">Cargados</span>}
+              </div>
+              
+              {participants.length === 0 ? (
+                <button onClick={() => participantFileInputRef.current?.click()} className="w-full py-12 border-2 border-dashed border-slate-100 rounded-[2rem] flex flex-col items-center gap-4 text-slate-400 hover:bg-indigo-50/50 hover:border-indigo-100 transition-all group/btn">
+                  <FileSpreadsheet className="w-10 h-10 text-slate-200 group-hover/btn:text-indigo-400 transition-colors" />
+                  <div className="text-center">
+                    <span className="font-black text-sm text-slate-900 block mb-1">Subir Excel Participantes</span>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Format: name, phone, ticket_code</p>
+                  </div>
                 </button>
+              ) : (
+                <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 flex items-center justify-between shadow-inner">
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Registros</p>
+                    <p className="text-3xl font-black text-slate-900">{participants.length} <span className="text-xs text-slate-400 font-bold">Participantes</span></p>
+                  </div>
+                  <button onClick={() => setParticipants([])} className="p-4 bg-white text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm border border-red-50"><Trash2 className="w-6 h-6" /></button>
+                </div>
               )}
             </div>
-            
-            {participants.length === 0 ? (
-              <button onClick={() => participantFileInputRef.current?.click()} className="w-full py-12 border-2 border-dashed border-slate-100 rounded-[1.5rem] flex flex-col items-center gap-4 text-slate-400 hover:bg-indigo-50/30 transition-all group">
-                <FileSpreadsheet className="w-10 h-10 text-slate-200 group-hover:text-indigo-500" />
-                <div className="text-center">
-                  <span className="font-black text-sm text-slate-900 block">Importar Clientes</span>
-                  <span className="text-[9px] font-bold uppercase tracking-widest opacity-50 mt-1 block">Excel (Nombre, Celular, Ticket)</span>
-                </div>
-              </button>
-            ) : (
-              <div className="bg-emerald-50/50 p-6 rounded-[1.5rem] border border-emerald-100 flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="bg-emerald-500 p-4 rounded-2xl text-white shadow-md"><UserCheck className="w-6 h-6" /></div>
-                  <div>
-                    <p className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Base Cargada</p>
-                    <p className="text-2xl font-black text-emerald-950 tracking-tighter">{participants.length} <span className="text-sm opacity-50">REGISTROS</span></p>
-                  </div>
-                </div>
-                <button onClick={() => setShowFullParticipantList(!showFullParticipantList)} className="px-4 py-2 bg-white text-emerald-600 rounded-xl font-black text-[9px] uppercase shadow-sm border border-emerald-100">
-                  {showFullParticipantList ? 'Cerrar' : 'Ver'}
-                </button>
-              </div>
-            )}
             <input type="file" ref={participantFileInputRef} className="hidden" accept=".xlsx,.xls,.csv" onChange={(e) => handleFileChange(e, 'participants')} />
           </section>
 
-          <section className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100">
-            <h3 className="text-base font-black uppercase text-slate-800 mb-6 flex items-center gap-2"><Briefcase className="text-indigo-600 w-5 h-5" /> Premios</h3>
-            <textarea 
-              className="w-full h-32 p-4 bg-slate-50 border border-slate-200 rounded-[1.2rem] text-[13px] font-bold outline-none focus:border-indigo-400 transition-all mb-4 resize-none" 
-              placeholder="Empresa (Celular) : Descripción del Premio" 
-              value={prizesInput} 
-              onChange={(e) => setPrizesInput(e.target.value)} 
-            />
-            <div className="flex gap-3">
-              <button onClick={handlePrizeUpdateManual} className="flex-[2] bg-slate-900 text-white py-3.5 rounded-xl font-black text-[11px] uppercase tracking-[0.1em] shadow-md hover:bg-black active:scale-95 transition-all">GUARDAR LISTA</button>
-              <button onClick={() => prizeFileInputRef.current?.click()} className="flex-1 bg-indigo-50 text-indigo-600 py-3.5 rounded-xl font-black text-[11px] uppercase flex items-center justify-center gap-2">
-                <Upload className="w-4 h-4" /> EXCEL
-              </button>
+          <section className="bg-white p-8 rounded-[2.5rem] shadow-lg border border-slate-100 flex flex-col justify-between group">
+            <div>
+              <h3 className="text-lg font-black uppercase text-slate-800 flex items-center gap-3 mb-6"><Building2 className="text-indigo-600 w-6 h-6" /> Negocios y Premios</h3>
+              <div className="space-y-4">
+                <button onClick={() => prizeFileInputRef.current?.click()} className="w-full py-4 border-2 border-dashed border-slate-100 rounded-[1.5rem] flex items-center justify-center gap-3 text-slate-400 hover:bg-indigo-50/50 hover:border-indigo-100 transition-all group/btn">
+                  <Upload className="w-4 h-4 text-indigo-400 group-hover/btn:scale-110 transition-transform" />
+                  <span className="font-black text-[10px] uppercase tracking-widest text-slate-600">Importar Excel de Negocios</span>
+                </button>
+                <textarea className="w-full h-24 p-5 bg-slate-50 border border-slate-100 rounded-[1.5rem] text-xs font-bold outline-none resize-none focus:border-indigo-200 transition-all" placeholder="Empresa : Premio (Uno por línea)" value={prizesInput} onChange={(e) => setPrizesInput(e.target.value)} />
+              </div>
             </div>
+            <button onClick={handlePrizeUpdateManual} className="w-full bg-slate-900 text-white py-3 rounded-[1.5rem] font-black text-[10px] uppercase tracking-[0.2em] hover:bg-black transition-all shadow-lg active:scale-95 mt-4">Sincronizar Lista</button>
             <input type="file" ref={prizeFileInputRef} className="hidden" accept=".xlsx,.xls,.csv" onChange={(e) => handleFileChange(e, 'prizes')} />
           </section>
         </div>
 
-        {/* TABLA DE GANADORES - MÁS COMPACTA */}
-        <section className="bg-white rounded-[2rem] shadow-sm border border-slate-100 overflow-hidden">
-          <div className="p-6 md:p-8 border-b bg-slate-50/30 flex flex-wrap gap-4 justify-between items-center">
-            <div className="flex items-center gap-3">
-              <Trophy className="text-amber-500 w-6 h-6" />
-              <div>
-                <h3 className="text-lg font-black uppercase text-slate-900 leading-none">Ganadores Oficiales</h3>
-                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Sincronización en tiempo real</p>
+        {/* GANADORES */}
+        <section className="bg-white rounded-[3rem] shadow-xl border border-slate-100 overflow-hidden">
+          <div className="p-8 border-b bg-slate-50/50 flex flex-wrap justify-between items-center gap-4">
+            <div className="flex items-center gap-4">
+              <div className="bg-amber-100 p-3 rounded-2xl">
+                <Trophy className="text-amber-600 w-6 h-6" />
               </div>
+              <h3 className="text-xl font-black uppercase text-slate-900 tracking-tighter">Registro de Ganadores</h3>
             </div>
-            <div className="bg-indigo-600 text-white px-5 py-2 rounded-xl font-black text-xs shadow-md flex items-center gap-2">
-              <Crown className="w-4 h-4" /> {winners.length} PREMIADOS
-            </div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">{winners.length} Premiados en total</div>
           </div>
-          
           <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
+            <table className="w-full text-left border-collapse">
+              <thead className="bg-slate-50 text-[9px] font-black text-slate-400 uppercase tracking-[0.3em] border-b">
                 <tr>
-                  <th className="px-6 py-4">RD</th>
-                  <th className="px-6 py-4">Ganador</th>
-                  <th className="px-6 py-4">Premio</th>
-                  <th className="px-6 py-4">Sponsor</th>
+                  <th className="px-10 py-5">Ronda</th>
+                  <th className="px-10 py-5">Ganador</th>
+                  <th className="px-10 py-5">Premio</th>
+                  <th className="px-10 py-5">Empresa Sponsor</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {winners.map(w => (
-                  <tr key={w.id} className="hover:bg-indigo-50/20 transition-all">
-                    <td className="px-6 py-4">
-                       <span className="w-8 h-8 flex items-center justify-center bg-indigo-50 text-indigo-600 rounded-lg font-black text-sm border border-indigo-100">#{w.round}</span>
+                  <tr key={w.id} className="hover:bg-indigo-50/10 transition-all group">
+                    <td className="px-10 py-6">
+                       <span className="font-black text-indigo-600 bg-indigo-50 px-4 py-1.5 rounded-xl border border-indigo-100 text-lg">#{w.round}</span>
                     </td>
-                    <td className="px-6 py-4">
-                      <div className="font-black text-slate-900 text-base leading-tight">{w.nombre}</div>
-                      <div className="text-[10px] font-bold text-slate-400 mt-0.5">{w.celular} • T-{w.ticket}</div>
+                    <td className="px-10 py-6">
+                      <div className="font-black text-slate-900 uppercase text-xl group-hover:text-indigo-600 transition-colors mb-1">{w.nombre}</div>
+                      <div className="text-[10px] font-bold text-emerald-600 flex items-center gap-2"><Phone className="w-3 h-3" /> {w.celular}</div>
                     </td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm font-black text-indigo-900 italic leading-tight">"{w.prize}"</div>
+                    <td className="px-10 py-6">
+                      <div className="font-black text-indigo-950 italic text-xl leading-tight">"{w.prize}"</div>
                     </td>
-                    <td className="px-6 py-4">
-                      <div className="font-black text-slate-950 uppercase text-[10px] tracking-wider mb-1">{w.sponsor}</div>
-                      {w.sponsorPhone && (
-                        <div className="text-[10px] font-black text-emerald-600 flex items-center gap-1">
-                          <Phone className="w-3 h-3" /> {w.sponsorPhone}
-                        </div>
-                      )}
+                    <td className="px-10 py-6">
+                      <div className="font-black text-slate-950 uppercase text-[9px] tracking-widest flex items-center gap-2 bg-slate-100/50 px-4 py-2 rounded-lg inline-flex border border-slate-200">
+                        <Building2 className="w-4 h-4 text-indigo-500" /> {w.sponsor}
+                      </div>
                     </td>
                   </tr>
                 ))}
                 {winners.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="py-20 text-center opacity-30">
-                      <Database className="w-16 h-16 mx-auto mb-4 text-slate-200" />
-                      <p className="font-black uppercase text-xs tracking-widest text-slate-400">Sin ganadores registrados</p>
-                    </td>
+                    <td colSpan={4} className="py-20 text-center text-slate-300 font-black uppercase text-sm tracking-[0.5em] italic opacity-40">Sin ganadores registrados</td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
         </section>
-
       </main>
 
-      <footer className="py-8 text-center mt-auto border-t bg-white">
-         <div className="flex flex-col items-center gap-3 opacity-30 text-indigo-600">
-           <Zap className="w-4 h-4 fill-current" />
-           <span className="font-black text-[9px] uppercase tracking-[0.5em]">Tribu Raffle Engine v7.5 • Compact Edition</span>
-         </div>
+      <footer className="py-10 text-center opacity-30 mt-auto flex flex-col items-center gap-4">
+         <Zap className="w-6 h-6 text-indigo-600 fill-current" />
+         <span className="font-black text-[8px] uppercase tracking-[0.8em]">Tribu Engine v8.6 • Premium Raffle Experience</span>
       </footer>
     </div>
   );

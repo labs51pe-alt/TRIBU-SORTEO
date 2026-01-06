@@ -29,6 +29,14 @@
           30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
           40%, 60% { transform: translate3d(4px, 0, 0); }
         }
+        @keyframes glow-pulse {
+          0% { transform: scale(1); box-shadow: 0 15px 0 0 #cbd5e1, 0 0 0 0 rgba(79, 70, 229, 0); }
+          50% { transform: scale(1.03); box-shadow: 0 15px 0 0 #cbd5e1, 0 0 30px 10px rgba(79, 70, 229, 0.1); }
+          100% { transform: scale(1); box-shadow: 0 15px 0 0 #cbd5e1, 0 0 0 0 rgba(79, 70, 229, 0); }
+        }
+        .animate-glow-pulse:not(:disabled) {
+          animation: glow-pulse 2.5s infinite ease-in-out;
+        }
         .glass {
           background: rgba(255, 255, 255, 0.05);
           backdrop-filter: blur(16px);
