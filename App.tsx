@@ -6,23 +6,15 @@ import {
   Upload, 
   Trash2, 
   Play, 
-  Search,
-  Hash,
   Zap,
   Building2,
   FileSpreadsheet,
   Crown,
   RefreshCcw,
-  UserCheck,
   Download,
-  Database,
   Wifi,
   WifiOff,
   Phone,
-  Briefcase,
-  Ticket,
-  Gift,
-  ExternalLink,
   Sparkles
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
@@ -49,8 +41,6 @@ const App: React.FC = () => {
   const [spinName, setSpinName] = useState<string>('');
   const [prizesInput, setPrizesInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
   const [isSupabaseConnected, setIsSupabaseConnected] = useState(true);
   
   const participantFileInputRef = useRef<HTMLInputElement>(null);
@@ -59,17 +49,28 @@ const App: React.FC = () => {
 
   const handlePrizeUpdateManual = () => {
     const lines = prizesInput.split('\n').filter(l => l.trim());
-    const newPrizes: Prize[] = new Array(MAX_ROUNDS).fill(null).map((_, i) => ({ sponsor: "Tribu", description: `Sorteo #${i + 1}` }));
+    const newPrizes: Prize[] = new Array(MAX_ROUNDS).fill(null).map((_, i) => ({ sponsor: "Tribu", description: `Premio #${i + 1}` }));
     lines.forEach((line, i) => {
       if (i < MAX_ROUNDS) {
         const parts = line.split(':');
         const sponsorPart = parts[0]?.trim() || "Tribu";
-        const descPart = parts.slice(1).join(':').trim() || `Sorteo #${i + 1}`;
+        const descPart = parts.slice(1).join(':').trim() || `Premio #${i + 1}`;
         newPrizes[i] = { sponsor: sponsorPart, description: descPart };
       }
     });
     setPrizes(newPrizes);
     alert("Lista de negocios actualizada.");
+  };
+
+  const clearPrizes = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if(confirm("¿Estás seguro de que deseas borrar TODA la lista de negocios y premios?")) {
+      const resetPrizes = new Array(MAX_ROUNDS).fill(null).map((_, i) => ({ sponsor: "Tribu", description: `Premio #${i + 1}` }));
+      setPrizes(resetPrizes);
+      setPrizesInput('');
+      localStorage.setItem(STORAGE_KEY_PRIZES, JSON.stringify(resetPrizes));
+    }
   };
 
   const exportWinners = () => {
@@ -114,7 +115,6 @@ const App: React.FC = () => {
   const processParticipantsWithAI = async (rawData: any[]) => {
     if (rawData.length === 0) return;
     setIsLoading(true);
-    setLoadingStep('Mapeando Participantes...');
     try {
       const allKeys = Object.keys(rawData[0]);
       const colNombre = allKeys.find(k => ['name', 'dueño', 'nombre'].includes(k.toLowerCase())) || allKeys[2];
@@ -168,8 +168,12 @@ const App: React.FC = () => {
           id: w.id, nombre: w.nombre, ticket: w.ticket, celular: w.celular, prize: w.prize,
           sponsor: w.sponsor, round: w.round, wonAt: new Date(w.won_at), fecha: new Date(w.won_at).toLocaleDateString()
         })));
+        setIsSupabaseConnected(true);
       }
-    } catch (err) { console.error(err); }
+    } catch (err) { 
+      console.error(err);
+      setIsSupabaseConnected(false);
+    }
   };
 
   useEffect(() => {
@@ -179,7 +183,8 @@ const App: React.FC = () => {
     if (savedPrizes) {
       const p = JSON.parse(savedPrizes);
       setPrizes(p);
-      setPrizesInput(p.filter((x: Prize) => x.sponsor !== "Tribu").map((x: Prize) => `${x.sponsor}: ${x.description}`).join('\n'));
+      const manualLines = p.filter((x: Prize) => x.sponsor !== "Tribu").map((x: Prize) => `${x.sponsor}: ${x.description}`).join('\n');
+      setPrizesInput(manualLines);
     }
     fetchWinners();
   }, []);
@@ -246,7 +251,7 @@ const App: React.FC = () => {
           <button onClick={exportWinners} className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-black transition-all shadow-lg active:scale-95">
             <Download className="w-3.5 h-3.5" /> Exportar Resultados
           </button>
-          <button onClick={() => { if(confirm("¿Reiniciar sistema?")) { localStorage.clear(); window.location.reload(); } }} className="p-2 text-slate-300 hover:text-red-500 transition-colors bg-slate-50 rounded-lg">
+          <button onClick={() => { if(confirm("¿Deseas reiniciar toda la aplicación? Esto borrará TODO.")) { localStorage.clear(); window.location.reload(); } }} className="p-2 text-slate-300 hover:text-red-500 transition-colors bg-slate-50 rounded-lg" title="Reiniciar App">
             <RefreshCcw className="w-4 h-4" />
           </button>
         </div>
@@ -356,7 +361,7 @@ const App: React.FC = () => {
               </div>
               
               {participants.length === 0 ? (
-                <button onClick={() => participantFileInputRef.current?.click()} className="w-full py-12 border-2 border-dashed border-slate-100 rounded-[2rem] flex flex-col items-center gap-4 text-slate-400 hover:bg-indigo-50/50 hover:border-indigo-100 transition-all group/btn">
+                <button type="button" onClick={() => participantFileInputRef.current?.click()} className="w-full py-12 border-2 border-dashed border-slate-100 rounded-[2rem] flex flex-col items-center gap-4 text-slate-400 hover:bg-indigo-50/50 hover:border-indigo-100 transition-all group/btn">
                   <FileSpreadsheet className="w-10 h-10 text-slate-200 group-hover/btn:text-indigo-400 transition-colors" />
                   <div className="text-center">
                     <span className="font-black text-sm text-slate-900 block mb-1">Subir Excel Participantes</span>
@@ -369,7 +374,7 @@ const App: React.FC = () => {
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Registros</p>
                     <p className="text-3xl font-black text-slate-900">{participants.length} <span className="text-xs text-slate-400 font-bold">Participantes</span></p>
                   </div>
-                  <button onClick={() => setParticipants([])} className="p-4 bg-white text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm border border-red-50"><Trash2 className="w-6 h-6" /></button>
+                  <button type="button" onClick={() => setParticipants([])} className="p-4 bg-white text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm border border-red-50" title="Borrar participantes"><Trash2 className="w-6 h-6" /></button>
                 </div>
               )}
             </div>
@@ -378,16 +383,29 @@ const App: React.FC = () => {
 
           <section className="bg-white p-8 rounded-[2.5rem] shadow-lg border border-slate-100 flex flex-col justify-between group">
             <div>
-              <h3 className="text-lg font-black uppercase text-slate-800 flex items-center gap-3 mb-6"><Building2 className="text-indigo-600 w-6 h-6" /> Negocios y Premios</h3>
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-black uppercase text-slate-800 flex items-center gap-3"><Building2 className="text-indigo-600 w-6 h-6" /> Negocios y Premios</h3>
+                {prizes.some(p => p.sponsor !== "Tribu") || prizesInput.trim() !== "" ? (
+                   <button 
+                     type="button"
+                     onClick={clearPrizes} 
+                     className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all border border-red-100 shadow-sm flex items-center gap-2" 
+                     title="Borrar TODA la lista de negocios"
+                   >
+                     <Trash2 className="w-4 h-4" />
+                     <span className="text-[9px] font-black uppercase tracking-widest">Borrar Todo</span>
+                   </button>
+                ) : null}
+              </div>
               <div className="space-y-4">
-                <button onClick={() => prizeFileInputRef.current?.click()} className="w-full py-4 border-2 border-dashed border-slate-100 rounded-[1.5rem] flex items-center justify-center gap-3 text-slate-400 hover:bg-indigo-50/50 hover:border-indigo-100 transition-all group/btn">
+                <button type="button" onClick={() => prizeFileInputRef.current?.click()} className="w-full py-4 border-2 border-dashed border-slate-100 rounded-[1.5rem] flex items-center justify-center gap-3 text-slate-400 hover:bg-indigo-50/50 hover:border-indigo-100 transition-all group/btn">
                   <Upload className="w-4 h-4 text-indigo-400 group-hover/btn:scale-110 transition-transform" />
                   <span className="font-black text-[10px] uppercase tracking-widest text-slate-600">Importar Excel de Negocios</span>
                 </button>
                 <textarea className="w-full h-24 p-5 bg-slate-50 border border-slate-100 rounded-[1.5rem] text-xs font-bold outline-none resize-none focus:border-indigo-200 transition-all" placeholder="Empresa : Premio (Uno por línea)" value={prizesInput} onChange={(e) => setPrizesInput(e.target.value)} />
               </div>
             </div>
-            <button onClick={handlePrizeUpdateManual} className="w-full bg-slate-900 text-white py-3 rounded-[1.5rem] font-black text-[10px] uppercase tracking-[0.2em] hover:bg-black transition-all shadow-lg active:scale-95 mt-4">Sincronizar Lista</button>
+            <button type="button" onClick={handlePrizeUpdateManual} className="w-full bg-slate-900 text-white py-3 rounded-[1.5rem] font-black text-[10px] uppercase tracking-[0.2em] hover:bg-black transition-all shadow-lg active:scale-95 mt-4">Sincronizar Lista</button>
             <input type="file" ref={prizeFileInputRef} className="hidden" accept=".xlsx,.xls,.csv" onChange={(e) => handleFileChange(e, 'prizes')} />
           </section>
         </div>
