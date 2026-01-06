@@ -25,7 +25,8 @@ import {
   WifiOff,
   Info,
   Phone,
-  Briefcase
+  Briefcase,
+  Ticket
 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
@@ -216,30 +217,37 @@ const App: React.FC = () => {
   const processParticipantsWithAI = async (rawData: any[]) => {
     if (rawData.length === 0) return;
     setIsLoading(true);
-    setLoadingStep('Mapeando columnas...');
+    setLoadingStep('Mapeando columnas con IA...');
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Analiza: ${JSON.stringify(Object.keys(rawData[0]))}. Retorna JSON: {"nombre": "col_nombre", "celular": "col_tel", "ticket": "col_ticket"}.`,
+        contents: `Analiza los encabezados de este Excel: ${JSON.stringify(Object.keys(rawData[0]))}. Basado en la imagen de referencia (name, phone, ticket_code), retorna un JSON estricto: {"nombre": "col_nombre", "celular": "col_tel", "ticket": "col_ticket"}.`,
         config: { responseMimeType: "application/json" }
       });
       const mapping = JSON.parse(response.text.replace(/```json|```/g, "").trim());
       const mapped = rawData.map((row, idx) => ({
         id: `p-${Date.now()}-${idx}`,
-        nombre: String(row[mapping.nombre] || 'Anónimo'),
-        celular: String(row[mapping.celular] || ''),
-        ticket: String(row[mapping.ticket] || idx),
+        nombre: String(row[mapping.nombre] || row['name'] || row['Dueño'] || 'Anónimo'),
+        celular: String(row[mapping.celular] || row['phone'] || row['Celular'] || ''),
+        ticket: String(row[mapping.ticket] || row['ticket_code'] || row['Negocio'] || idx),
         fecha: new Date().toLocaleDateString()
       }));
       setParticipants(prev => [...prev, ...mapped]);
       setStatus(AppStatus.READY);
     } catch (e) {
-      alert("Error mapeando. Asegúrate de tener las columnas Nombre, Celular y Ticket.");
+      alert("Error mapeando. Usando fallback automático.");
+      const mapped = rawData.map((row, idx) => ({
+        id: `p-${Date.now()}-${idx}`,
+        nombre: String(row['name'] || row['Nombre'] || 'Anónimo'),
+        celular: String(row['phone'] || row['Celular'] || ''),
+        ticket: String(row['ticket_code'] || row['Ticket'] || idx),
+        fecha: new Date().toLocaleDateString()
+      }));
+      setParticipants(prev => [...prev, ...mapped]);
     } finally { setIsLoading(false); }
   };
 
-  // Fixed missing handleFileChange function
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'participants' | 'prizes') => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -247,24 +255,23 @@ const App: React.FC = () => {
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+        const wb = XLSX.read(data, { type: 'array' });
         const wsname = wb.SheetNames[0];
         const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws);
+        const jsonData = XLSX.utils.sheet_to_json(ws);
 
         if (type === 'participants') {
-          processParticipantsWithAI(data);
+          processParticipantsWithAI(jsonData);
         } else {
-          processPrizesExcel(data);
+          processPrizesExcel(jsonData);
         }
       } catch (err) {
         console.error("Error processing file", err);
         alert("Error al procesar el archivo Excel.");
       }
     };
-    reader.readAsBinaryString(file);
-    // Reset input value to allow re-uploading the same file
+    reader.readAsArrayBuffer(file);
     e.target.value = '';
   };
 
@@ -278,144 +285,245 @@ const App: React.FC = () => {
       if (++counter >= maxSpins) {
         clearInterval(spinInterval.current!);
         const winner = availableParticipants[Math.floor(Math.random() * availableParticipants.length)];
-        const newW: Winner = { ...winner, wonAt: new Date(), round: currentRound, prize: activePrize.description, sponsor: activePrize.sponsor, sponsorPhone: activePrize.sponsorPhone };
+        const newW: Winner = { 
+          ...winner, 
+          wonAt: new Date(), 
+          round: currentRound, 
+          prize: activePrize.description, 
+          sponsor: activePrize.sponsor, 
+          sponsorPhone: activePrize.sponsorPhone 
+        };
         setCurrentWinner(newW);
         setWinners(prev => [newW, ...prev]);
         setStatus(AppStatus.WINNER_REVEALED);
         saveWinnerToSupabase(newW);
-        confetti({ particleCount: 200, spread: 100, origin: { y: 0.6 } });
+        confetti({ 
+          particleCount: 300, 
+          spread: 120, 
+          origin: { y: 0.5 },
+          colors: ['#4f46e5', '#fbbf24', '#10b981', '#f43f5e']
+        });
       }
-    }, 60);
+    }, 65);
   }, [availableParticipants, currentRound, activePrize]);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       <header className="bg-white border-b px-6 py-4 flex justify-between items-center sticky top-0 z-50 shadow-sm">
         <div className="flex items-center gap-3">
           <Zap className="text-indigo-600 fill-current" />
-          <h1 className="text-xl font-black">Tribu<span className="text-indigo-600">Sorteos</span></h1>
+          <h1 className="text-xl font-black tracking-tight text-slate-900">Tribu<span className="text-indigo-600">Sorteos</span></h1>
           <div className={`px-3 py-1 rounded-full text-[10px] font-black uppercase flex items-center gap-2 ${isSupabaseConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
-            {isSupabaseConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />} {isSupabaseConnected ? 'Cloud Activo' : 'Offline'}
+            {isSupabaseConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />} {isSupabaseConnected ? 'Cloud Sync' : 'Offline'}
           </div>
         </div>
-        <div className="flex gap-4">
-          <button onClick={exportWinners} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-black flex items-center gap-2 hover:bg-emerald-700 transition-all"><Download className="w-4 h-4" /> EXPORTAR FINAL</button>
-          <button onClick={() => { if(confirm("¿Reiniciar?")) { localStorage.clear(); window.location.reload(); } }} className="text-slate-300 hover:text-red-500"><RefreshCcw className="w-5 h-5" /></button>
+        <div className="flex items-center gap-4">
+          <button onClick={exportWinners} className="bg-slate-900 text-white px-5 py-2.5 rounded-2xl text-xs font-black flex items-center gap-2 hover:bg-black transition-all shadow-lg active:scale-95">
+            <Download className="w-4 h-4" /> EXPORTAR RESULTADOS
+          </button>
+          <button onClick={() => { if(confirm("¿Deseas reiniciar la sesión?")) { localStorage.clear(); window.location.reload(); } }} className="p-2 text-slate-300 hover:text-red-500 transition-colors" title="Reiniciar App">
+            <RefreshCcw className="w-5 h-5" />
+          </button>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto w-full p-6 space-y-8">
         
-        {/* PANEL SORTEO */}
-        <section className="raffle-gradient rounded-[3rem] p-12 text-white border-[8px] border-white shadow-2xl min-h-[55vh] flex flex-col items-center justify-center text-center relative overflow-hidden">
-          <div className="relative z-10 w-full space-y-10">
+        {/* PANEL SORTEO PRINCIPAL */}
+        <section className="raffle-gradient rounded-[4rem] p-12 text-white border-[10px] border-white shadow-2xl min-h-[60vh] flex flex-col items-center justify-center text-center relative overflow-hidden transition-all duration-500">
+          <div className="relative z-10 w-full max-w-5xl space-y-12">
             {status === AppStatus.SPINNING ? (
-              <div className="space-y-6 animate-pulse">
-                <div className="text-8xl md:text-[10rem] font-black italic tracking-tighter">{spinName}</div>
-                <p className="text-indigo-200 font-bold text-2xl uppercase tracking-widest">Sorteando premio de {activePrize.sponsor}...</p>
+              <div className="space-y-8 animate-in zoom-in-95 duration-300">
+                <div className="inline-block bg-amber-400 text-indigo-950 px-8 py-2 rounded-full font-black text-xs uppercase tracking-[0.3em] shadow-xl">GIRANDO TÓMBOLA...</div>
+                <div className="text-8xl md:text-[11rem] font-black italic tracking-tighter leading-none animate-pulse drop-shadow-[0_10px_10px_rgba(0,0,0,0.5)]">
+                  {spinName}
+                </div>
+                <div className="flex flex-col items-center gap-3">
+                   <p className="text-indigo-200 font-bold text-xl uppercase tracking-widest">Premio de: {activePrize.sponsor}</p>
+                   <div className="h-2 w-64 bg-white/10 rounded-full overflow-hidden">
+                     <div className="h-full bg-amber-400 animate-progress"></div>
+                   </div>
+                </div>
               </div>
             ) : status === AppStatus.WINNER_REVEALED && currentWinner ? (
-              <div className="space-y-8 animate-in zoom-in-95 duration-500">
-                <div className="bg-emerald-500 text-white px-8 py-4 rounded-full font-black text-2xl inline-block border-4 border-white shadow-xl animate-bounce">¡FELICIDADES!</div>
-                <h2 className="text-7xl md:text-9xl font-black italic leading-none drop-shadow-2xl">{currentWinner.nombre}</h2>
-                <div className="bg-white/10 glass p-8 rounded-[3rem] max-w-2xl mx-auto border border-white/20">
-                  <p className="text-indigo-200 text-sm uppercase font-black mb-2 tracking-widest">Ganó el premio de {currentWinner.sponsor}:</p>
-                  <p className="text-4xl md:text-6xl font-black text-amber-400 italic leading-tight">"{currentWinner.prize}"</p>
-                  <div className="mt-4 flex justify-center gap-4 text-white/60 font-bold">
-                    <span className="flex items-center gap-1"><Phone className="w-3 h-3" /> {currentWinner.celular}</span>
-                    <span className="bg-white/10 px-3 py-1 rounded-lg text-xs">{currentWinner.ticket}</span>
+              <div className="space-y-8 animate-in zoom-in-90 duration-700">
+                <div className="bg-emerald-500 text-white px-10 py-5 rounded-full font-black text-3xl inline-block border-4 border-white shadow-2xl animate-bounce tracking-widest">¡GANADOR OFICIAL!</div>
+                
+                <div className="space-y-2">
+                  <h2 className="text-7xl md:text-[10rem] font-black italic leading-none drop-shadow-[0_15px_15px_rgba(0,0,0,0.6)] text-white">
+                    {currentWinner.nombre}
+                  </h2>
+                  <div className="flex justify-center gap-6 text-2xl font-black text-amber-400">
+                     <span className="flex items-center gap-2"><Phone className="w-6 h-6" /> {currentWinner.celular}</span>
+                     <span className="bg-white/10 px-4 py-1 rounded-xl text-white/90 text-sm flex items-center gap-2 border border-white/10"><Ticket className="w-4 h-4" /> {currentWinner.ticket}</span>
                   </div>
                 </div>
-                <button onClick={() => setStatus(AppStatus.READY)} className="bg-white text-indigo-950 px-16 py-6 rounded-full font-black text-2xl shadow-xl active:translate-y-2 transition-all">SIGUIENTE PREMIO</button>
+
+                <div className="bg-white/10 glass p-10 rounded-[4rem] max-w-3xl mx-auto border border-white/20 shadow-2xl backdrop-blur-3xl transform hover:scale-105 transition-transform">
+                  <p className="text-indigo-200 text-sm uppercase font-black mb-4 tracking-[0.4em]">Se ha llevado el premio de {currentWinner.sponsor}:</p>
+                  <p className="text-4xl md:text-6xl font-black text-white italic leading-tight mb-6">"{currentWinner.prize}"</p>
+                  
+                  {currentWinner.sponsorPhone && (
+                    <div className="pt-6 border-t border-white/10 flex flex-col items-center gap-2">
+                       <p className="text-[10px] font-black uppercase text-indigo-300 tracking-widest">Contacto de la Empresa:</p>
+                       <div className="bg-emerald-500/20 px-6 py-2 rounded-2xl border border-emerald-500/40 text-emerald-400 font-black text-xl flex items-center gap-3">
+                         <Phone className="w-5 h-5" /> {currentWinner.sponsorPhone}
+                       </div>
+                    </div>
+                  )}
+                </div>
+
+                <button onClick={() => setStatus(AppStatus.READY)} className="group bg-white text-indigo-950 px-20 py-8 rounded-full font-black text-4xl shadow-[0_15px_0_0_#cbd5e1] hover:translate-y-2 active:translate-y-5 transition-all uppercase tracking-widest flex items-center gap-4 mx-auto">
+                  CONTINUAR <Zap className="w-8 h-8 group-hover:scale-125 transition-transform" />
+                </button>
               </div>
             ) : (
-              <div className="space-y-10">
-                <div>
-                   <Crown className="w-16 h-16 text-amber-400 mx-auto mb-4" />
-                   <h2 className="text-8xl md:text-[10rem] font-black italic leading-none drop-shadow-2xl opacity-90">TRIBU</h2>
-                   <p className="text-indigo-200 text-xl font-bold tracking-[0.5em] mt-4">RONDA #{currentRound}</p>
+              <div className="space-y-12">
+                <div className="space-y-4">
+                   <Crown className="w-20 h-20 text-amber-400 mx-auto drop-shadow-lg" />
+                   <h2 className="text-9xl md:text-[13rem] font-black italic leading-none drop-shadow-[0_20px_20px_rgba(0,0,0,0.5)] tracking-tighter">TRIBU</h2>
+                   <div className="inline-block bg-white/10 px-8 py-2 rounded-full font-black text-2xl tracking-[0.5em] text-indigo-200 backdrop-blur-md">RONDA #{currentRound}</div>
                 </div>
-                <div className="bg-amber-400 text-indigo-950 p-12 rounded-[4rem] max-w-3xl mx-auto shadow-2xl relative">
-                   <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-white px-6 py-2 rounded-full text-[10px] font-black uppercase shadow-md">{activePrize.sponsor} Patrocina:</div>
-                   <p className="text-4xl md:text-6xl font-black italic leading-tight">"{activePrize.description}"</p>
+
+                <div className="bg-amber-400 text-indigo-950 p-12 rounded-[5rem] max-w-4xl mx-auto shadow-[0_25px_50px_-12px_rgba(251,191,36,0.3)] relative group transform transition-all duration-300 hover:-rotate-1">
+                   <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-white px-8 py-3 rounded-full text-xs font-black uppercase shadow-xl flex items-center gap-3 border-2 border-amber-400">
+                     <Building2 className="w-4 h-4" /> {activePrize.sponsor} Patrocina:
+                   </div>
+                   <p className="text-5xl md:text-7xl font-black italic leading-tight tracking-tight">"{activePrize.description}"</p>
+                   {activePrize.sponsorPhone && (
+                     <div className="mt-6 flex justify-center items-center gap-2 font-black opacity-50 text-sm">
+                       <Phone className="w-4 h-4" /> {activePrize.sponsorPhone}
+                     </div>
+                   )}
                 </div>
-                <button onClick={startRaffle} disabled={availableParticipants.length === 0} className="bg-white text-indigo-950 px-24 py-10 rounded-full font-black text-5xl shadow-[0_15px_0_0_#cbd5e1] hover:translate-y-1 active:translate-y-4 transition-all disabled:opacity-50">SORTEAR</button>
-                <div className="text-indigo-300 font-bold uppercase text-sm tracking-widest">{availableParticipants.length} Participantes en el Bombo</div>
+
+                <div className="flex flex-col items-center gap-10">
+                  <button onClick={startRaffle} disabled={availableParticipants.length === 0} className="group relative bg-white text-indigo-950 px-28 py-12 rounded-full font-black text-6xl shadow-[0_20px_0_0_#cbd5e1] hover:translate-y-2 active:translate-y-6 transition-all disabled:opacity-50 disabled:translate-y-0 disabled:shadow-none">
+                    <span className="flex items-center gap-8"><Play className="w-16 h-16 fill-current group-hover:scale-110 transition-transform" /> SORTEAR</span>
+                  </button>
+                  <div className="flex items-center gap-4 text-indigo-200 font-black text-sm uppercase tracking-[0.4em] opacity-60">
+                    <Users className="w-5 h-5" /> {availableParticipants.length} Participantes Restantes
+                  </div>
+                </div>
               </div>
             )}
           </div>
         </section>
 
-        {/* CONFIGURACIÓN */}
+        {/* CONTROLES ADMINISTRATIVOS */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          <section className="bg-white p-8 rounded-[3rem] shadow-sm border">
-            <h3 className="text-lg font-black uppercase mb-6 flex items-center gap-3"><Users className="text-indigo-600" /> Carga de Dueños</h3>
+          <section className="bg-white p-8 rounded-[3.5rem] shadow-sm border border-slate-100 transition-all hover:shadow-md">
+            <div className="flex justify-between items-center mb-8">
+              <h3 className="text-xl font-black uppercase text-slate-800 flex items-center gap-3"><Users className="text-indigo-600 w-6 h-6" /> Carga de participantes</h3>
+              {participants.length > 0 && (
+                <button onClick={() => setParticipants([])} className="p-3 bg-red-50 text-red-400 hover:bg-red-500 hover:text-white rounded-2xl transition-all" title="Vaciar Lista">
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              )}
+            </div>
+            
             {participants.length === 0 ? (
-              <button onClick={() => participantFileInputRef.current?.click()} className="w-full py-20 border-2 border-dashed border-slate-200 rounded-[2.5rem] flex flex-col items-center gap-4 text-slate-400 hover:bg-indigo-50 transition-all">
-                <FileSpreadsheet className="w-12 h-12" /> <span className="font-bold">Subir Excel Participantes</span>
+              <button onClick={() => participantFileInputRef.current?.click()} className="w-full py-24 border-2 border-dashed border-slate-200 rounded-[3rem] flex flex-col items-center gap-6 text-slate-400 hover:bg-indigo-50/50 hover:border-indigo-200 transition-all group">
+                <div className="bg-slate-50 p-6 rounded-3xl group-hover:bg-white transition-all shadow-sm">
+                   <FileSpreadsheet className="w-12 h-12 text-slate-300 group-hover:text-indigo-600" />
+                </div>
+                <div className="text-center">
+                  <span className="font-black text-lg text-slate-900 block">Subir Excel de Clientes</span>
+                  <span className="text-xs font-bold uppercase tracking-widest opacity-60 mt-2 block">Nombre, Teléfono, Ticket</span>
+                </div>
               </button>
             ) : (
-              <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100 flex items-center justify-between">
-                <div><p className="text-xs font-black text-emerald-600 uppercase">Participantes Cargados</p><p className="text-3xl font-black text-emerald-900">{participants.length}</p></div>
-                <button onClick={() => setParticipants([])} className="p-3 bg-white text-red-500 rounded-2xl shadow-sm"><Trash2 className="w-6 h-6" /></button>
+              <div className="bg-emerald-50 p-8 rounded-[2.5rem] border border-emerald-100 flex items-center justify-between shadow-inner">
+                <div className="flex items-center gap-6">
+                  <div className="bg-emerald-500 p-5 rounded-[2rem] text-white shadow-lg"><UserCheck className="w-8 h-8" /></div>
+                  <div>
+                    <p className="text-xs font-black text-emerald-600 uppercase tracking-widest mb-1">Base de Datos Lista</p>
+                    <p className="text-4xl font-black text-emerald-950 tracking-tighter">{participants.length} <span className="text-lg opacity-60">CLIENTES</span></p>
+                  </div>
+                </div>
+                <button onClick={() => setShowFullParticipantList(!showFullParticipantList)} className="px-6 py-3 bg-white/80 hover:bg-white text-emerald-600 rounded-2xl font-black text-[10px] uppercase shadow-sm transition-all">
+                  {showFullParticipantList ? 'Ocultar' : 'Ver Todos'}
+                </button>
               </div>
             )}
-            <input type="file" ref={participantFileInputRef} className="hidden" onChange={(e) => handleFileChange(e, 'participants')} />
+            <input type="file" ref={participantFileInputRef} className="hidden" accept=".xlsx,.xls,.csv" onChange={(e) => handleFileChange(e, 'participants')} />
           </section>
 
-          <section className="bg-white p-8 rounded-[3rem] shadow-sm border">
-            <h3 className="text-lg font-black uppercase mb-6 flex items-center gap-3"><Briefcase className="text-indigo-600" /> Lista de Premios</h3>
-            <textarea className="w-full h-32 p-4 bg-slate-50 border-2 border-slate-100 rounded-3xl text-sm font-bold outline-none mb-4" placeholder="Empresa (999000111) : Premio" value={prizesInput} onChange={(e) => setPrizesInput(e.target.value)} />
-            <div className="flex gap-2">
-              <button onClick={handlePrizeUpdateManual} className="flex-1 bg-slate-900 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest">Actualizar Lista</button>
-              <button onClick={() => prizeFileInputRef.current?.click()} className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl"><Upload className="w-5 h-5" /></button>
+          <section className="bg-white p-8 rounded-[3.5rem] shadow-sm border border-slate-100 transition-all hover:shadow-md">
+            <h3 className="text-xl font-black uppercase text-slate-800 mb-8 flex items-center gap-3"><Briefcase className="text-indigo-600 w-6 h-6" /> Lista de Premios</h3>
+            <textarea 
+              className="w-full h-40 p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] text-sm font-bold outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 transition-all mb-4 resize-none" 
+              placeholder="Ejemplo: Empresa (999000111) : Premio Increíble" 
+              value={prizesInput} 
+              onChange={(e) => setPrizesInput(e.target.value)} 
+            />
+            <div className="flex gap-4">
+              <button onClick={handlePrizeUpdateManual} className="flex-[2] bg-slate-900 text-white py-5 rounded-[1.8rem] font-black text-xs uppercase tracking-[0.2em] shadow-lg hover:bg-black active:scale-95 transition-all">ACTUALIZAR PREMIOS</button>
+              <button onClick={() => prizeFileInputRef.current?.click()} className="flex-1 bg-indigo-50 text-indigo-600 py-5 rounded-[1.8rem] font-black text-xs uppercase flex items-center justify-center gap-2 hover:bg-indigo-100 transition-all">
+                <Upload className="w-5 h-5" /> EXCEL
+              </button>
             </div>
-            <input type="file" ref={prizeFileInputRef} className="hidden" onChange={(e) => handleFileChange(e, 'prizes')} />
+            <input type="file" ref={prizeFileInputRef} className="hidden" accept=".xlsx,.xls,.csv" onChange={(e) => handleFileChange(e, 'prizes')} />
           </section>
         </div>
 
-        {/* HISTORIAL DETALLADO */}
-        <section className="bg-white rounded-[3rem] shadow-sm border overflow-hidden">
-          <div className="p-8 border-b bg-slate-50/50 flex justify-between items-center">
-            <h3 className="text-xl font-black uppercase flex items-center gap-4"><Trophy className="text-amber-500" /> Historial de Ganadores Oficiales</h3>
-            <div className="bg-indigo-600 text-white px-4 py-1 rounded-full text-xs font-black">{winners.length} Premiados</div>
+        {/* TABLA DE GANADORES FINAL */}
+        <section className="bg-white rounded-[4rem] shadow-sm border border-slate-100 overflow-hidden">
+          <div className="p-10 border-b bg-slate-50/50 flex flex-wrap gap-6 justify-between items-center">
+            <div className="space-y-1">
+              <h3 className="text-2xl font-black uppercase text-slate-900 flex items-center gap-4"><Trophy className="text-amber-500 w-8 h-8" /> Historial de Ganadores Oficiales</h3>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-12">Registro en tiempo real sincronizado con Cloud</p>
+            </div>
+            <div className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-black text-sm shadow-xl flex items-center gap-3">
+              <Crown className="w-5 h-5" /> {winners.length} PREMIADOS HOY
+            </div>
           </div>
+          
           <div className="overflow-x-auto">
             <table className="w-full text-left">
-              <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
+              <thead className="bg-slate-50/80 text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] border-b">
                 <tr>
-                  <th className="px-8 py-5">#</th>
-                  <th className="px-8 py-5">Ganador (Teléfono)</th>
-                  <th className="px-8 py-5">Premio</th>
-                  <th className="px-8 py-5">Sponsor (Teléfono)</th>
+                  <th className="px-10 py-6">Ronda</th>
+                  <th className="px-10 py-6">Ganador (Información)</th>
+                  <th className="px-10 py-6">Premio Obtenido</th>
+                  <th className="px-10 py-6">Empresa & Contacto</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {winners.map(w => (
-                  <tr key={w.id} className="hover:bg-indigo-50/30 transition-colors">
-                    <td className="px-8 py-6 font-black text-indigo-600 text-lg">#{w.round}</td>
-                    <td className="px-8 py-6">
-                      <div className="font-black text-slate-900 text-lg leading-tight">{w.nombre}</div>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-xs font-bold text-slate-400 flex items-center gap-1"><Phone className="w-3 h-3" /> {w.celular}</span>
-                        <span className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-black text-slate-500 uppercase">{w.ticket}</span>
+                  <tr key={w.id} className="hover:bg-indigo-50/40 transition-all duration-300">
+                    <td className="px-10 py-8">
+                       <span className="w-12 h-12 flex items-center justify-center bg-indigo-50 text-indigo-600 rounded-2xl font-black text-xl border border-indigo-100">#{w.round}</span>
+                    </td>
+                    <td className="px-10 py-8">
+                      <div className="font-black text-slate-900 text-xl leading-tight mb-1">{w.nombre}</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="text-sm font-bold text-slate-500 flex items-center gap-1.5"><Phone className="w-4 h-4 text-emerald-500" /> {w.celular}</span>
+                        <span className="bg-slate-100 px-3 py-1 rounded-lg text-[10px] font-black text-slate-500 uppercase flex items-center gap-1.5 border border-slate-200"><Ticket className="w-3.5 h-3.5" /> {w.ticket}</span>
                       </div>
                     </td>
-                    <td className="px-8 py-6">
-                      <div className="text-base font-black text-indigo-900 italic leading-tight">"{w.prize}"</div>
+                    <td className="px-10 py-8">
+                      <div className="text-lg font-black text-indigo-900 italic leading-tight group-hover:translate-x-1 transition-transform">"{w.prize}"</div>
                     </td>
-                    <td className="px-8 py-6">
-                      <div className="font-black text-slate-800 uppercase text-xs">{w.sponsor}</div>
-                      {w.sponsorPhone && (
-                        <div className="text-xs font-bold text-emerald-600 flex items-center gap-1 mt-1">
-                          <Phone className="w-3 h-3" /> {w.sponsorPhone}
+                    <td className="px-10 py-8">
+                      <div className="font-black text-slate-950 uppercase text-xs tracking-wider flex items-center gap-2 mb-2"><Building2 className="w-3.5 h-3.5 text-indigo-400" /> {w.sponsor}</div>
+                      {w.sponsorPhone ? (
+                        <div className="text-sm font-black text-emerald-600 flex items-center gap-2 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-100 w-fit">
+                          <Phone className="w-4 h-4" /> {w.sponsorPhone}
                         </div>
+                      ) : (
+                        <span className="text-[10px] font-bold text-slate-300 italic">Sin teléfono registrado</span>
                       )}
                     </td>
                   </tr>
                 ))}
                 {winners.length === 0 && (
-                  <tr><td colSpan={4} className="p-20 text-center opacity-20"><Database className="w-16 h-16 mx-auto mb-4" /><p className="font-black uppercase">Esperando el primer premio...</p></td></tr>
+                  <tr>
+                    <td colSpan={4} className="p-32 text-center opacity-25">
+                      <Database className="w-24 h-24 mx-auto mb-6 text-slate-300" />
+                      <p className="font-black uppercase text-lg tracking-[0.5em] text-slate-400">Esperando el primer ganador...</p>
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
@@ -424,7 +532,12 @@ const App: React.FC = () => {
 
       </main>
 
-      <footer className="py-12 text-center opacity-20 font-black uppercase text-[10px] tracking-[0.5em]">Tribu Raffle v7.2 - Supabase Enabled</footer>
+      <footer className="py-16 text-center mt-auto border-t bg-white">
+         <div className="flex flex-col items-center gap-4 opacity-30 text-indigo-600">
+           <Zap className="w-6 h-6 fill-current" />
+           <span className="font-black text-[11px] uppercase tracking-[0.8em]">Tribu Raffle Engine v7.3 • Cloud & AI Optimized</span>
+         </div>
+      </footer>
     </div>
   );
 };
