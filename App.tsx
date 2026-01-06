@@ -11,19 +11,13 @@ import {
   Zap,
   Building2,
   FileSpreadsheet,
-  AlertCircle,
-  Loader2,
   Crown,
-  Settings2,
   RefreshCcw,
-  ChevronDown,
-  ChevronUp,
   UserCheck,
   Download,
   Database,
   Wifi,
   WifiOff,
-  Info,
   Phone,
   Briefcase,
   Ticket
@@ -61,6 +55,91 @@ const App: React.FC = () => {
   const participantFileInputRef = useRef<HTMLInputElement>(null);
   const prizeFileInputRef = useRef<HTMLInputElement>(null);
   const spinInterval = useRef<number | null>(null);
+
+  // Process Excel for Prizes
+  const processPrizesExcel = (jsonData: any[]) => {
+    let prizeList: Prize[] = [];
+    if (jsonData.length > 0) {
+      const keys = Object.keys(jsonData[0]);
+      const sponsorKey = keys.find(k => k.toLowerCase().match(/negocio|empresa|sponsor|marca/));
+      const descriptionKey = keys.find(k => k.toLowerCase().match(/premio|regalo|descripcion/));
+      const phoneKey = keys.find(k => k.toLowerCase().match(/celular|tel|fono|whatsapp/));
+      
+      prizeList = jsonData.map(row => ({
+        sponsor: String(row[sponsorKey || keys[0]] || "Tribu").trim(),
+        description: String(row[descriptionKey || keys[keys.length - 1]] || "Sin descripción").trim(),
+        sponsorPhone: row[phoneKey] ? String(row[phoneKey]).trim() : ""
+      })).filter(p => p.description && p.description !== "undefined");
+    }
+    if (prizeList.length > 0) {
+      const newPrizes = [...prizes];
+      prizeList.forEach((p, i) => { if(i < MAX_ROUNDS) newPrizes[i] = p; });
+      setPrizes(newPrizes);
+      setPrizesInput(prizeList.map(p => `${p.sponsor}${p.sponsorPhone ? ' ('+p.sponsorPhone+')' : ''}: ${p.description}`).join('\n'));
+    }
+  };
+
+  // Process Excel for Participants
+  const processParticipantsWithAI = async (rawData: any[]) => {
+    if (rawData.length === 0) return;
+    setIsLoading(true);
+    setLoadingStep('Mapeando columnas con IA...');
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Analiza los encabezados: ${JSON.stringify(Object.keys(rawData[0]))}. Retorna JSON: {"nombre": "col_nombre", "celular": "col_tel", "ticket": "col_ticket"}.`,
+        config: { responseMimeType: "application/json" }
+      });
+      const resText = response.text || "{}";
+      const mapping = JSON.parse(resText.replace(/```json|```/g, "").trim());
+      const mapped = rawData.map((row, idx) => ({
+        id: `p-${Date.now()}-${idx}`,
+        nombre: String(row[mapping.nombre] || row['name'] || row['Dueño'] || 'Anónimo'),
+        celular: String(row[mapping.celular] || row['phone'] || row['Celular'] || ''),
+        ticket: String(row[mapping.ticket] || row['ticket_code'] || row['Negocio'] || idx),
+        fecha: new Date().toLocaleDateString()
+      }));
+      setParticipants(prev => [...prev, ...mapped]);
+      setStatus(AppStatus.READY);
+    } catch (e) {
+      console.error("Mapping error:", e);
+      const mapped = rawData.map((row, idx) => ({
+        id: `p-${Date.now()}-${idx}`,
+        nombre: String(row['name'] || row['Nombre'] || 'Anónimo'),
+        celular: String(row['phone'] || row['Celular'] || ''),
+        ticket: String(row['ticket_code'] || row['Ticket'] || idx),
+        fecha: new Date().toLocaleDateString()
+      }));
+      setParticipants(prev => [...prev, ...mapped]);
+    } finally { setIsLoading(false); }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'participants' | 'prizes') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+        const wb = XLSX.read(data, { type: 'array' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const jsonData = XLSX.utils.sheet_to_json(ws);
+
+        if (type === 'participants') {
+          processParticipantsWithAI(jsonData);
+        } else {
+          processPrizesExcel(jsonData);
+        }
+      } catch (err) {
+        alert("Error al procesar el archivo Excel.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
 
   const fetchWinners = async () => {
     try {
@@ -119,13 +198,6 @@ const App: React.FC = () => {
   const availableParticipants = useMemo(() => {
     return participants.filter(p => !winners.some(w => w.id === p.id));
   }, [participants, winners]);
-
-  const filteredParticipants = useMemo(() => {
-    return participants.filter(p => 
-      p.nombre.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      p.ticket.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [participants, searchQuery]);
 
   const currentRound = winners.length + 1;
   const activePrize = useMemo(() => {
@@ -192,98 +264,16 @@ const App: React.FC = () => {
     XLSX.writeFile(wb, `Tribu_Final_${new Date().toLocaleDateString()}.xlsx`);
   };
 
-  const processPrizesExcel = (jsonData: any[]) => {
-    let prizeList: Prize[] = [];
-    if (jsonData.length > 0) {
-      const keys = Object.keys(jsonData[0]);
-      const sponsorKey = keys.find(k => k.toLowerCase().match(/negocio|empresa|sponsor|marca/));
-      const descriptionKey = keys.find(k => k.toLowerCase().match(/premio|regalo|descripcion/));
-      const phoneKey = keys.find(k => k.toLowerCase().match(/celular|tel|fono|whatsapp/));
-      
-      prizeList = jsonData.map(row => ({
-        sponsor: String(row[sponsorKey || keys[0]] || "Tribu").trim(),
-        description: String(row[descriptionKey || keys[keys.length - 1]] || "Sin descripción").trim(),
-        sponsorPhone: row[phoneKey] ? String(row[phoneKey]).trim() : ""
-      })).filter(p => p.description && p.description !== "undefined");
-    }
-    if (prizeList.length > 0) {
-      const newPrizes = [...prizes];
-      prizeList.forEach((p, i) => { if(i < MAX_ROUNDS) newPrizes[i] = p; });
-      setPrizes(newPrizes);
-      setPrizesInput(prizeList.map(p => `${p.sponsor}${p.sponsorPhone ? ' ('+p.sponsorPhone+')' : ''}: ${p.description}`).join('\n'));
-    }
-  };
-
-  const processParticipantsWithAI = async (rawData: any[]) => {
-    if (rawData.length === 0) return;
-    setIsLoading(true);
-    setLoadingStep('Mapeando columnas con IA...');
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Analiza los encabezados de este Excel: ${JSON.stringify(Object.keys(rawData[0]))}. Basado en la imagen de referencia (name, phone, ticket_code), retorna un JSON estricto: {"nombre": "col_nombre", "celular": "col_tel", "ticket": "col_ticket"}.`,
-        config: { responseMimeType: "application/json" }
-      });
-      const mapping = JSON.parse(response.text.replace(/```json|```/g, "").trim());
-      const mapped = rawData.map((row, idx) => ({
-        id: `p-${Date.now()}-${idx}`,
-        nombre: String(row[mapping.nombre] || row['name'] || row['Dueño'] || 'Anónimo'),
-        celular: String(row[mapping.celular] || row['phone'] || row['Celular'] || ''),
-        ticket: String(row[mapping.ticket] || row['ticket_code'] || row['Negocio'] || idx),
-        fecha: new Date().toLocaleDateString()
-      }));
-      setParticipants(prev => [...prev, ...mapped]);
-      setStatus(AppStatus.READY);
-    } catch (e) {
-      alert("Error mapeando. Usando fallback automático.");
-      const mapped = rawData.map((row, idx) => ({
-        id: `p-${Date.now()}-${idx}`,
-        nombre: String(row['name'] || row['Nombre'] || 'Anónimo'),
-        celular: String(row['phone'] || row['Celular'] || ''),
-        ticket: String(row['ticket_code'] || row['Ticket'] || idx),
-        fecha: new Date().toLocaleDateString()
-      }));
-      setParticipants(prev => [...prev, ...mapped]);
-    } finally { setIsLoading(false); }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'participants' | 'prizes') => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
-        const wb = XLSX.read(data, { type: 'array' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const jsonData = XLSX.utils.sheet_to_json(ws);
-
-        if (type === 'participants') {
-          processParticipantsWithAI(jsonData);
-        } else {
-          processPrizesExcel(jsonData);
-        }
-      } catch (err) {
-        console.error("Error processing file", err);
-        alert("Error al procesar el archivo Excel.");
-      }
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = '';
-  };
-
   const startRaffle = useCallback(() => {
     if (availableParticipants.length === 0) return;
     setStatus(AppStatus.SPINNING);
     let counter = 0;
     const maxSpins = 40; 
     spinInterval.current = window.setInterval(() => {
-      setSpinName(availableParticipants[Math.floor(Math.random() * availableParticipants.length)].nombre);
+      const idx = Math.floor(Math.random() * availableParticipants.length);
+      setSpinName(availableParticipants[idx].nombre);
       if (++counter >= maxSpins) {
-        clearInterval(spinInterval.current!);
+        if (spinInterval.current) clearInterval(spinInterval.current);
         const winner = availableParticipants[Math.floor(Math.random() * availableParticipants.length)];
         const newW: Winner = { 
           ...winner, 
